@@ -200,7 +200,7 @@ def eval_datasets(
         for dp in tqdm(df):
             img_idx, rays_o, rays_d, pose, mask, ev100, _, _, target = dp
 
-            if 'spotlight' in envmap_path:
+            if envmap_path and 'spotlight' in envmap_path:
                 illumination_context_override = get_spotlight_context(rays_o)
 
             gt_rgbs.append(tf.reshape(target, (H, W, 3)))
@@ -705,6 +705,7 @@ def render_video(
     video_dir,
     render_factor=0,
 ):
+    return
     H, W, F = hwf
 
     if render_factor != 0:
