@@ -175,8 +175,9 @@ class NeuralPILModel(tf.keras.Model):
     ):
         if illumination_context_override is not None:
             illumination_idx = tf.cast(
-                tf.ones_like(illumination_idx) * illumination_context_override, tf.int32
+                tf.ones_like(illumination_idx, tf.float32) * illumination_context_override, tf.int32
             )
+            print(f"\nOverride in npil_dist_call, idx shape : {illumination_idx.shape} \n")
 
         options = tf.data.Options()
         options.experimental_distribute.auto_shard_policy = (
