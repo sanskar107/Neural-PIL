@@ -661,7 +661,6 @@ def main(args):
                             )
 
             # Render video when a video epoch arrives
-            return
             if epoch % args.video_epoch == 0 or args.render_only or args.only_video:
                 print("RENDERING VIDEO...")
                 video_dir = os.path.join(
