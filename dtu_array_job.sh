@@ -1,16 +1,13 @@
 #!/bin/bash
-#SBATCH --job-name=nerd_val
+#SBATCH --job-name=nerd_dtu
 #SBATCH -p gpu
 #SBATCH --gres=gpu:1
 #SBATCH --qos=normal
 #SBATCH -c 8
-#SBATCH --output="./dtu_bmvs_logs_val/dtu_bmvs-%a-%j.log"
+#SBATCH --output="./dtu_bmvs_logs/dtu_bmvs-%a-%j.log"
 #SBATCH --open-mode=append
 #SBATCH --array="0-22"
 
-# scenes=(
-# split16_bmvs_bear
-# )
 scenes=(
 split16_dtu_scan122
 split16_dtu_scan106
@@ -38,8 +35,16 @@ split16_dtu_scan63
 )
 
 scene="${scenes[$SLURM_ARRAY_TASK_ID]}"
-echo "====== Scene: $scene ======"
+
+if [[ "$scene" == split16_dtu_* ]]; then
+    # DTU scenes
+    rwfactor='2'
+else
+    rwfactor='1'
+fi
+
+echo "====== Scene: $scene : $rwfactor ======"
 
 datadir="/export/share/projects/svbrdf/data/dtu_bmvs_nerd/$scene"
 
-python train_nerd.py --datadir "$datadir" --basedir dtu_bmvs --expname "$scene" --config configs/nerd/real_world.txt --rwfactor 2 --render_only
+python train_nerd.py --datadir "$datadir" --basedir /export/share/projects/svbrdf/data/dtu_bmvs_nerd/nerd --expname "$scene" --config configs/nerd/real_world.txt --rwfactor "$rwfactor"

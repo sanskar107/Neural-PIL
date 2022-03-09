@@ -334,7 +334,7 @@ def main(args):
         color_loss_lambda = tf.Variable(1.0, dtype=tf.float32)
         # Run the actual optimization for x epochs
 
-        for epoch in range(start_epoch + 1, args.epochs + (2 if args.render_only or args.only_video else 1)):
+        for epoch in range(start_epoch + 1, args.epochs + (2 if args.render_only else 1)):
             pbar = tf.keras.utils.Progbar(len(train_df))
 
             # Iterate over the train dataset
