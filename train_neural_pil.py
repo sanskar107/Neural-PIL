@@ -86,6 +86,7 @@ def get_envmap(path):
 
     if img.min() < 0:
         img = img + img.min()
+    img = img / 10
 
     return tf.convert_to_tensor(np.clip(np.nan_to_num(img, nan=0, posinf=np.max(img), neginf=0), 0, None))
 

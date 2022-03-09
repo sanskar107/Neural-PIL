@@ -14,7 +14,7 @@ epochs = 400
 steps_per_epoch = 1000
 
 weights_epoch = 10
-validation_epoch = 10
+validation_epoch = 20
 testset_epoch = 400
 video_epoch = 400
 
