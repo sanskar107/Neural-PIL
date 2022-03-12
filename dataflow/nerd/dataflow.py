@@ -89,6 +89,14 @@ def add_args(parser):
         "--rwholdout", type=int, default=16, help="Real world holdout stride"
     )
 
+    parser.add_argument(
+        "--poses_path",
+        type=str,
+        default=None,
+        required=True,
+        help="poses path for the video"
+    )
+
     return parser
 
 
@@ -153,6 +161,7 @@ def pick_correct_dataset(args):
             basedir=args.datadir,
             factor=args.rwfactor,
             spherify=args.spherify,
+            poses_path=args.poses_path,
         )
 
         hwf = poses[0, :3, -1]
@@ -186,6 +195,17 @@ def pick_correct_dataset(args):
 
         near = tf.reduce_min(bds) * near
         far = tf.reduce_max(bds) * far
+        print("near, fear = ", near, far)
+
+        near = tf.reduce_min(tf.norm(render_poses[:, :3, 3], axis=1))
+        far = tf.reduce_max(tf.norm(render_poses[:, :3, 3], axis=1))
+        print("near, fear = ", near, far)
+
+        # a = tf.norm(poses[:, :3, 3], axis=1)
+        # print(tf.reduce_min(a), tf.reduce_max(a))
+        # b = tf.norm(render_poses[:, :3, 3], axis=1)
+        # print(tf.reduce_min(b), tf.reduce_max(b))
+        # exit(0)
 
     # Cast intrinsics to right types
     H, W, focal = hwf

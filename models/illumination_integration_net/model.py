@@ -198,6 +198,30 @@ class FiLMIlluminationNetwork(K.Model):
         return recon_shape_restored
 
     @tf.function
+    def call_video_samples(self, direction, conditional, latent):
+        latent_samples = tf.expand_dims(latent, 1) * tf.ones_like(
+            direction[..., :1]
+        )  # B, H*W, latent_dim
+
+        latent_flat = tf.reshape(latent_samples, (-1, self.mapping_network.latent_dim))
+        directions_flat = tf.reshape(direction, (-1, 3))
+        cond_flat = tf.reshape(conditional, (-1, 1))
+
+        print(directions_flat.shape, cond_flat.shape, latent_flat.shape)
+        recon_flat = self.call(directions_flat, cond_flat, latent_flat)
+
+        recon_shape_restored = tf.reshape(
+            recon_flat,
+            (
+                tf.shape(direction)[0],
+                tf.shape(direction)[1],
+                3
+            ),
+        )
+
+        return recon_shape_restored
+
+    @tf.function
     def eval_env_map(self, latent, conditional: float, img_height=128):
         uvs = math_utils.shape_to_uv(img_height, img_height * 2)  # H, W, 2
         directions = math_utils.uv_to_direction(uvs)  # H, W, 3

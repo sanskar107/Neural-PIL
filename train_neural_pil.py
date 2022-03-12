@@ -76,17 +76,27 @@ def parse_args():
     )
     return train_utils.parse_args_file_without_nones(parser)
 
-def get_envmap(path):
+def norm_envmap(data):
+    return np.clip(
+        np.power(data / (np.ones_like(data) + data), 1.0 / 2.2),
+        0,
+        1
+    )
+
+
+def get_envmap(path, reshape=True):
     import cv2
     img = cv2.cvtColor(
         cv2.imread(path, cv2.IMREAD_UNCHANGED), cv2.COLOR_BGR2RGB
     ).astype(np.float32)
-    img = cv2.resize(img, (256, 128), cv2.INTER_AREA)
-    cv2.imwrite('spotlight_gt.png', img.astype(np.uint8))
+    if reshape:
+        img = cv2.resize(img, (256, 128), cv2.INTER_AREA)
+    # cv2.imwrite('spotlight_gt.png', img.astype(np.uint8))
 
     if img.min() < 0:
         img = img + img.min()
-    img = img / 10
+    # img = norm_envmap(img) * 255
+    # img = img / 10
 
     return tf.convert_to_tensor(np.clip(np.nan_to_num(img, nan=0, posinf=np.max(img), neginf=0), 0, None))
 
@@ -172,12 +182,31 @@ def eval_datasets(
     is_single_env: bool,
     illumination_factor,
     envmap_path=None,
+    render_poses=None,
 ):
     # Build lists to save all individual images
     gt_rgbs = []
     gt_masks = []
 
-    H, W, _ = hwf
+    H, W, F = render_poses[0][:3, 4]
+    H, W = int(H), int(W)
+    # H, W, F = H // 2, W // 2, F / 2.0
+    # H, W, F = H // 2, W // 2, F / 8.0
+    # H, W, F = H//4, W//4, F / 4.0
+
+    print("inside = ", H, W, F)
+
+    ##### envmap background
+    from train_illumination_net import parser as illumination_parser
+    from models.illumination_integration_net import IlluminationNetwork
+    illum_parser = illumination_parser()
+    illum_args = illum_parser.parse_args(
+        args="--config %s"
+        % os.path.join("data/neural_pil/illumination-network", "args.txt")
+    )
+    illumination_net = IlluminationNetwork(illum_args, trainable=False)
+    illumination_net.illumination_network.set_weights(np.load('data/neural_pil/illumination-network/network.npy', allow_pickle=True))
+    print("\nrestored illum net\n")
 
     predictions = {}
     to_extract_coarse = [("rgb", 3), ("acc_alpha", 1)]
@@ -191,10 +220,232 @@ def eval_datasets(
         ("depth", 1),
     ]
 
+    for d in df:
+        img_idx, _, _, _, _, ev100_video, _, _, target = d
+        break
+
     illumination_context_override = None
     if envmap_path:
         envmap = get_envmap(envmap_path)
         illumination_context_override = get_illum_override_context(envmap)
+
+    pose_df = tf.data.Dataset.from_tensor_slices(render_poses[:, :3, :4])
+
+    video_latent = model.illumination_embedding_store(img_idx)
+    illumination_factor_video = model.calculate_illumination_factor(
+        tf.convert_to_tensor([[0, 1, 0]], tf.float32),
+        ev100_video,
+        illumination_context_override if illumination_context_override is not None else video_latent,
+        # video_latent,
+    )
+    
+    if envmap_path is not None:
+        envmap_background = get_envmap(envmap_path, reshape=False).numpy()
+        envmap_background = cv2.resize(envmap_background , (512, 256), cv2.INTER_AREA)
+        # envmap_background = cv2.cvtColor(
+        #     cv2.imread(envmap_path, cv2.IMREAD_UNCHANGED), cv2.COLOR_BGR2RGB
+        # ).astype(np.float32)
+        print("background = ", envmap_background.shape)
+    else:
+        envmap_background = None
+
+    def norm_envmap(data):
+        return np.clip(
+            np.power(data / (np.ones_like(data) + data), 1.0 / 2.2),
+            0,
+            1
+        )
+
+    def render_pose(pose, envmap_background):
+        # Always start and end with mean
+        rays_o, rays_d = get_full_image_eval_grid(H, W, F, tf.reshape(pose, (3, 4)))
+
+        _, fine_result = model.distributed_call(
+            strategy=strategy,
+            chunk_size=chunk_size,
+            ray_origins=tf.reshape(rays_o, (-1, 3)),
+            ray_directions=tf.reshape(rays_d, (-1, 3)),
+            camera_pose=pose,
+            near_bound=near,
+            far_bound=far,
+            illumination_idx=tf.convert_to_tensor([0]),
+            ev100=ev100_video,
+            illumination_factor=illumination_factor_video, # TODO: check with illum_factor_video as in render_video function
+            training=False,
+            illumination_context_override=illumination_context_override,
+            high_quality=True,
+        )
+
+        if envmap_background is not None:
+            illum_dirs = rays_d / tf.reshape(tf.norm(rays_d, axis=2), (*rays_d.shape[:2], 1)) - rays_o / tf.reshape(tf.norm(rays_o, axis=2), (*rays_o.shape[:2], 1))
+            illum_dirs = rays_d
+            uv = math_utils.direction_to_uv(tf.reshape(illum_dirs, (-1, 3))).numpy()
+            u, v = uv[:, 0], uv[:, 1]
+            x = np.clip(u * envmap_background.shape[1] - 0.5, 0, envmap_background.shape[1]).astype(np.int32)
+            y = np.clip(v * envmap_background.shape[0] - 0.5, 0, envmap_background.shape[0]).astype(np.int32)
+            print(x,y)
+            envmap_background *= 1.0
+            # envmap_background = norm_envmap(envmap_background) * 255
+            out = np.empty((uv.shape[0], 3))
+            out = envmap_background[y,x]
+            out = out.reshape((H, W, 3))
+            out = norm_envmap(out)
+            # out = (out / out.max()) * 255
+            # out = norm_envmap(out) * 255
+            cv2.imwrite('videos/envmap4.png', (out*255).astype(np.uint8))
+
+            view_direction = math_utils.normalize(-1 * tf.reshape(rays_d, (-1, 3)))
+            fres = fine_result
+            latents = illumination_context_override
+
+            (
+                view_direction,
+                reflection_direction,
+            ) = model.fine_model.renderer.calculate_reflection_direction(
+                view_direction,
+                fres["normal"],
+                camera_pose=None,
+            )
+
+            diffuse_irradiance = model.fine_model.illumination_net.call_multi_samples(
+                tf.expand_dims(reflection_direction, 0),
+                tf.expand_dims(
+                    tf.ones_like(
+                        fres["roughness"]
+                    ),  # Just sample with maximum roughness
+                    0,
+                ),
+                latents,
+            )[0]
+
+            specular_irradiance = model.fine_model.illumination_net.call_multi_samples(
+                tf.expand_dims(reflection_direction, 0),
+                tf.expand_dims(fres["roughness"], 0),
+                latents,
+            )[0]
+
+            hdr_rgb = model.fine_model.renderer(
+                view_direction,
+                fres["normal"],
+                diffuse_irradiance,
+                specular_irradiance,
+                fres["diffuse"],
+                fres["specular"],
+                fres["roughness"],
+            )
+
+            fine_result["hdr_rgb"] = hdr_rgb
+
+            # # We do not have a fitting ev for this scene - Just use reinhard tone mapping
+            # rgb = math_utils.white_background_compose(
+            #     math_utils.linear_to_srgb(math_utils.uncharted2_filmic(hdr_rgb)),
+            #     fres["acc_alpha"][..., None]
+            #     * (
+            #         tf.where(
+            #             fres["depth"] < (far * 1.0),
+            #             tf.ones_like(fres["depth"]),
+            #             tf.zeros_like(fres["depth"]),
+            #         )[..., None]
+            #     ),
+            # )
+            # rgb = (rgb.numpy() * 255).astype(np.uint8)
+            # rgb = rgb.reshape((H, W, 3))
+            # cv2.imwrite("videos/test2_factor_override_no_norm.png", rgb[:, :, [2, 1, 0]])
+            # # print(rgb, rgb.shape)
+            # exit(0)
+
+            return fine_result, out.reshape(-1, 3).astype(np.float32)
+        else:
+            return fine_result, None
+
+
+        # for latent_dp in tqdm(latent_dist_df):
+        #     rgb_per_replica = strategy.run(
+        #         render_latent, (rays_o, rays_d, fine_result, latent_dp)
+        #     )
+        #     rgb_result = strategy.gather(rgb_per_replica, 0).numpy()
+        #     rgb_results = np.split(rgb_result, train_utils.get_num_gpus(), 0)
+        #     fine_results["rgb"] = fine_results.get("rgb", []) + rgb_results
+
+
+    fine_results = {}
+    out_dir = os.path.join('videos', 'hydrant106', 'estimated' if envmap_path is None else envmap_path.split('/')[-1].replace('.hdr', ''))
+    print("saving results in : ", out_dir)
+    os.makedirs(out_dir, exist_ok=True)
+
+    for iter, pose_dp in enumerate(tqdm(pose_df)):
+        cur_pose = pose_dp
+        print("cur pose : ", cur_pose)
+        print("illum_factor : ", illumination_factor)
+        print("illum_factor_video : ", illumination_factor_video)
+        fine_result, background = render_pose(pose_dp, envmap_background)
+
+        if background is None:
+            fine_result["rgb"] = math_utils.white_background_compose(
+                math_utils.linear_to_srgb(
+                    math_utils.uncharted2_filmic(fine_result["hdr_rgb"] * math_utils.ev100_to_exp(ev100_video))
+                ),
+                fine_result["acc_alpha"][..., None]
+                * (
+                    tf.where(
+                        fine_result["depth"] < (far * 1.0),
+                        tf.ones_like(fine_result["depth"]),
+                        tf.zeros_like(fine_result["depth"]),
+                    )[..., None]
+                ),
+            )
+        else:
+            fine_result["rgb"] = math_utils.env_background_compose(
+                math_utils.linear_to_srgb(
+                    math_utils.uncharted2_filmic(fine_result["hdr_rgb"])
+                ),
+                tf.convert_to_tensor(background),
+                fine_result["acc_alpha"][..., None]
+                * (
+                    tf.where(
+                        fine_result["depth"] < (far * 1.0),
+                        tf.ones_like(fine_result["depth"]),
+                        tf.zeros_like(fine_result["depth"]),
+                    )[..., None]
+                ),
+            )
+
+        # fine_result["rgb"] = math_utils.linear_to_srgb(
+        #         math_utils.uncharted2_filmic(fine_result["hdr_rgb"] * math_utils.ev100_to_exp(ev100_video))
+        #     )
+
+        for k, v in fine_result.items():
+            fine_results[k] = fine_results.get(k, []) + [v.numpy()]
+
+        rgb = (fine_result["rgb"].numpy() * 255).astype(np.uint8)
+        rgb = rgb.reshape((H, W, 3))
+
+        mask = fine_result["acc_alpha"][..., None] * (
+                    tf.where(
+                        fine_result["depth"] < (far * 1.0),
+                        tf.ones_like(fine_result["depth"]),
+                        tf.zeros_like(fine_result["depth"]),
+                    )[..., None]
+                )
+
+        mask = mask.numpy().reshape((H, W)) * 255
+        mask = mask.astype(np.uint8)
+
+        # hdr_rgb = fine_result["hdr_rgb"].numpy()
+        # hdr_rgb = (hdr_rgb / hdr_rgb.max()) * 255
+        # hdr_rgb = hdr_rgb.astype(np.uint8)
+        # hdr_rgb = hdr_rgb.reshape((H, W, 3))
+
+        out_path = os.path.join(out_dir, 'd_rgb_' + str(iter) + '.png')
+        cv2.imwrite(out_path, rgb[:, :, [2, 1, 0]])
+        cv2.imwrite(out_path.replace('rgb_', 'mask_'), mask)
+
+        if iter == 3:
+            exit(0)
+        # print(fine_results)
+        # exit(0)
+
+
 
     # Go over validation dataset
     with strategy.scope():
@@ -353,7 +604,7 @@ def main(args):
     # Setup directories, logging etc.
     with train_utils.SetupDirectory(
         args,
-        copy_files=not args.render_only or not args.only_video,
+        copy_files=False,
         main_script=__file__,
         copy_data=["data/neural_pil", "data/illumination"],
     ):
@@ -437,153 +688,12 @@ def main(args):
         )
         for epoch in range(
             start_epoch + 1,
-            args.epochs
-            + (
-                2 if args.render_only or args.only_video else 1
-            ),  # Slight hack to let this loop run when rendering is at the end
+            start_epoch + 2
         ):
             pbar = tf.keras.utils.Progbar(len(train_df))
 
-            # Iterate over the train dataset
-            if not args.render_only and not args.only_video:
-                with strategy.scope():
-                    for dp in train_dist_df:
-                        (
-                            img_idx,
-                            rays_o,
-                            rays_d,
-                            pose,
-                            mask,
-                            ev100,
-                            wb,
-                            wb_ref_image,
-                            target,
-                        ) = dp
-
-                        advanced_loss_lambda.assign(
-                            1
-                            * 0.1
-                            ** (
-                                tf.summary.experimental.get_step()
-                                / advanced_loss_decay_steps
-                            )
-                        )  # Starts with 1 goes to 0
-
-                        slow_fade_loss_lambda.assign(
-                            1
-                            * 0.1
-                            ** (
-                                tf.summary.experimental.get_step()
-                                / slow_fade_decay_steps
-                            )
-                        )  # Starts with 1 goes to 0
-
-                        # Execute train the train step
-                        (
-                            loss_per_replica,
-                            wb_loss_per_replica,
-                            coarse_losses_per_replica,
-                            fine_losses_per_replica,
-                        ) = strategy.run(
-                            neuralpil.train_step,
-                            (
-                                rays_o,
-                                rays_d,
-                                pose,
-                                near,
-                                far,
-                                img_idx,
-                                ev100,
-                                illumination_factor,
-                                wb_ref_image,
-                                wb,
-                                optimizer,
-                                target,
-                                mask,
-                                advanced_loss_lambda,
-                                slow_fade_loss_lambda,
-                            ),
-                        )
-
-                        loss = strategy.reduce(
-                            tf.distribute.ReduceOp.SUM, loss_per_replica, axis=None
-                        )
-                        wb_loss = strategy.reduce(
-                            tf.distribute.ReduceOp.SUM, wb_loss_per_replica, axis=None
-                        )
-                        coarse_losses = {}
-                        for k, v in coarse_losses_per_replica.items():
-                            coarse_losses[k] = strategy.reduce(
-                                tf.distribute.ReduceOp.SUM, v, axis=None
-                            )
-                        fine_losses = {}
-                        for k, v in fine_losses_per_replica.items():
-                            fine_losses[k] = strategy.reduce(
-                                tf.distribute.ReduceOp.SUM, v, axis=None
-                            )
-
-                        losses_for_pbar = [
-                            ("loss", loss.numpy()),
-                            ("coarse_loss", coarse_losses["loss"].numpy()),
-                            ("fine_loss", fine_losses["loss"].numpy()),
-                        ]
-
-                        pbar.add(
-                            1,
-                            values=losses_for_pbar,
-                        )
-
-                        # Log to tensorboard
-                        with tf.summary.record_if(
-                            tf.summary.experimental.get_step() % args.log_step == 0
-                        ):
-                            tf.summary.scalar("loss", loss)
-                            tf.summary.scalar("wb_loss", wb_loss)
-                            for k, v in coarse_losses.items():
-                                tf.summary.scalar("coarse_%s" % k, v)
-                            for k, v in fine_losses.items():
-                                tf.summary.scalar("fine_%s" % k, v)
-                            tf.summary.scalar(
-                                "lambda_advanced_loss", advanced_loss_lambda
-                            )
-
-                        tf.summary.experimental.set_step(
-                            tf.summary.experimental.get_step() + 1
-                        )
-
-                # Show last dp and render to tensorboard
-                if train_utils.get_num_gpus() > 1:
-                    dp = [d.values[0] for d in dp]
-
-                render_test_example(
-                    dp, hwf, neuralpil, args, near, far, illumination_factor, strategy
-                )
-
-                # Save when a weight epoch arrives
-                if epoch % args.weights_epoch == 0:
-                    neuralpil.save(
-                        tf.summary.experimental.get_step()
-                    )  # Step was already incremented
-
-                # Render validation if a validation epoch arrives
-                if epoch % args.validation_epoch == 0:
-                    print("RENDERING VALIDATION..., epoch : ", epoch)
-                    # Build lists to save all individual images
-                    run_validation(
-                        strategy,
-                        val_df,
-                        neuralpil,
-                        hwf,
-                        near,
-                        far,
-                        illumination_optimizer,
-                        args.batch_size,
-                        args.single_env,
-                        illumination_factor,
-                    )
-
             # Render test set when a test epoch arrives
-            if epoch % args.testset_epoch == 0 or args.render_only:
+            if True:
                 print("RENDERING TESTSET...")
                 ret, fine_ssim, fine_psnr = eval_datasets(
                     strategy,
@@ -597,25 +707,21 @@ def main(args):
                     args.batch_size,
                     args.single_env,
                     illumination_factor,
-                    args.envmap_path
+                    args.envmap_path,
+                    render_poses,
                 )
-
-                if not args.single_env:
-                    neuralpil.save(
-                        tf.summary.experimental.get_step() + 1
-                    )  # Step was already incremented
 
                 if args.envmap_path is None:
                     testimgdir = os.path.join(
-                        args.basedir,
+                        './video/',
                         args.expname,
-                        "test_imgs_{:06d}".format(tf.summary.experimental.get_step()),
+                        "estimated",
                     )
                 else:
                     testimgdir = os.path.join(
-                        args.basedir,
+                        './video/',
                         args.expname,
-                        args.envmap_path.split('/')[-1].replace('.hdr', '_') + "test_imgs_{:06d}".format(tf.summary.experimental.get_step()),
+                        args.envmap_path.split('/')[-1].replace('.hdr', '_'),
                     )
 
 
@@ -662,7 +768,7 @@ def main(args):
                             )
 
             # Render video when a video epoch arrives
-            if epoch % args.video_epoch == 0 or args.render_only or args.only_video:
+            if False:
                 print("RENDERING VIDEO...")
                 video_dir = os.path.join(
                     args.basedir,
@@ -706,7 +812,6 @@ def render_video(
     video_dir,
     render_factor=0,
 ):
-    return
     H, W, F = hwf
 
     if render_factor != 0:
