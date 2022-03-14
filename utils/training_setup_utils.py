@@ -123,20 +123,41 @@ class StateRestoration:
                 step = name_to_step(ckpts[-1])
             else:
                 return 0
+            
+            if 'dtu_illum6' in self.args.expname:
+                other_expname = self.args.expname.replace('dtu_illum6', 'dtu')
+            else:
+                other_expname = self.args.expname.replace('dtu', 'dtu_illum6')
+            other_ckpts = sorted(
+                [
+                    f
+                    for f in os.listdir(
+                        os.path.join(self.args.other_basedir, other_expname)
+                    )
+                    if self.to_watch[0].name in f
+                ],
+                key=name_to_step,
+            )
+            if len(other_ckpts) > 0:
+                other_step = name_to_step(other_ckpts[-1])
+            else:
+                print("No other ckpt found")
+                exit(0)
+                return 0
 
         for sri in self.to_watch:
-            print("Restoring", sri.obj, sri.name, step)
+            print("Restoring", sri.obj, sri.name, step, other_step)
             if sri.is_variable:
-                StateRestoration.restore_variable(self.args, sri.obj, sri.name, step)
+                StateRestoration.restore_variable(self.args, sri.obj, sri.name, step, other_step, other_expname)
             else:
-                StateRestoration.restore_weights(self.args, sri.obj, sri.name, step)
+                StateRestoration.restore_weights(self.args, sri.obj, sri.name, step, other_step, other_expname)
 
         return step
 
     @classmethod
-    def build_save_path(cls, args, prefix, i):
+    def build_save_path(cls, args, prefix, i, expname):
         return os.path.join(
-            args.basedir, args.expname, "{}_{:06d}.npy".format(prefix, i)
+            args.basedir, expname, "{}_{:06d}.npy".format(prefix, i)
         )
 
     @classmethod
@@ -152,14 +173,20 @@ class StateRestoration:
         print("saved variable", prefix, "at", path)
 
     @classmethod
-    def restore_weights(cls, args, net, prefix, i):
-        path = StateRestoration.build_save_path(args, prefix, i)
+    def restore_weights(cls, args, net, prefix, i, other_i, other_expname):
+        if 'illuminations' in prefix:
+            path = os.path.join(args.other_basedir, other_expname, "{}_{:06d}.npy".format(prefix, other_i))
+        else:
+            path = os.path.join(args.basedir, args.expname, "{}_{:06d}.npy".format(prefix, i))
         net.set_weights(np.load(path, allow_pickle=True))
         print("reloaded weights", prefix, "from", path)
 
     @classmethod
-    def restore_variable(cls, args, variable, prefix, i):
-        path = StateRestoration.build_save_path(args, prefix, i)
+    def restore_variable(cls, args, variable, prefix, i, other_i, other_expname):
+        if 'illuminations' in prefix:
+            path = os.path.join(args.other_basedir, other_expname, "{}_{:06d}.npy".format(prefix, other_i))
+        else:
+            path = os.path.join(args.basedir, args.expname, "{}_{:06d}.npy".format(prefix, i))
         data = np.load(path, allow_pickle=True)
         variable.assign(data)
         print("reloaded variable", prefix, "from", path)

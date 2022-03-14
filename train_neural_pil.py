@@ -59,6 +59,13 @@ def add_args(parser):
         help="envmap path for relighting"
     )
 
+    parser.add_argument(
+        "--other_basedir",
+        required=True,
+        type=str,
+        help="Basedir for other illumination.",
+    )
+
     parser.add_argument("--render_only", action="store_true")
     parser.add_argument("--only_video", action="store_true")
     parser.add_argument("--video_factor", type=int, default=0)
@@ -75,89 +82,6 @@ def parse_args():
         ),
     )
     return train_utils.parse_args_file_without_nones(parser)
-
-def get_envmap(path):
-    import cv2
-    img = cv2.cvtColor(
-        cv2.imread(path, cv2.IMREAD_UNCHANGED), cv2.COLOR_BGR2RGB
-    ).astype(np.float32)
-    img = cv2.resize(img, (256, 128), cv2.INTER_AREA)
-    cv2.imwrite('spotlight_gt.png', img.astype(np.uint8))
-
-    if img.min() < 0:
-        img = img + img.min()
-    img = img / 10
-
-    return tf.convert_to_tensor(np.clip(np.nan_to_num(img, nan=0, posinf=np.max(img), neginf=0), 0, None))
-
-def get_spotlight_context(dirs):
-    dirs = dirs[:1]
-    dirs /= tf.norm(dirs, axis=-1)
-    uvs = math_utils.direction_to_uv(dirs)
-    u = uvs[..., 0]
-    v = uvs[..., 1]
-
-    # u corresponds to width and v to heights
-    u_reshaped = tf.reshape(u, (-1, tf.math.reduce_prod(u.shape[1:])))
-    v_reshaped = tf.reshape(v, (-1, tf.math.reduce_prod(v.shape[1:])))
-
-    uvs = tf.stack(
-        [u_reshaped * (256 - 1), v_reshaped * (128 - 1)],
-        axis=-1,
-    )
-
-    def get_dirvec_image(width=256, height=128):
-        """Returns an image with dir vectors of shape [h,w,3]"""
-        uvs = np.stack(np.meshgrid(np.linspace(0,1,num=width), np.linspace(0,1,num=height)),axis=-1)
-        dirs = uvs_to_directions(uvs[...,0], uvs[...,1]).astype(np.float32)
-        return dirs
-
-
-    def uvs_to_directions(u,v):
-        theta = (u-0.5)*2*np.pi
-        phi = (v-0.5)*np.pi
-        c = np.cos(phi)
-        dirs = np.stack([c*np.cos(theta), c*np.sin(theta), -np.sin(phi)], axis=-1)
-        return dirs
-    
-    dirs = get_dirvec_image(256,128)
-    x,y = uvs[0][0].numpy().round().astype(np.int32)
-    print("x, y = ", x, y)
-    eye = dirs[y, x]
-    headlight = (30,50)
-    amplitude, sharpness = headlight
-    dot_eye_reflection = (eye.reshape(1,1,-1)*dirs).sum(axis=-1, keepdims=True)
-    img = amplitude*np.exp(sharpness*(dot_eye_reflection-1))[..., [0, 0, 0]]
-
-    cv2.imwrite("spot.png", img.astype(np.uint8))
-
-    if img.min() < 0:
-        img = img + img.min()
-
-    img = img / img.max()
-    
-    img = tf.convert_to_tensor(np.clip(np.nan_to_num(img, nan=0, posinf=np.max(img), neginf=0), 0, None))
-
-    return get_illum_override_context(img)
-
-
-def get_illum_override_context(envmap):
-    envmap = np.reshape(envmap, (1, *envmap.shape))
-
-    # Build the Illumination network
-    from train_illumination_net import parser as illumination_parser
-    from models.illumination_integration_net import IlluminationNetwork
-    
-    illum_parser = illumination_parser()
-    illum_args = illum_parser.parse_args(
-        args="--config %s"
-        % os.path.join("data/neural_pil/illumination-network", "args.txt")
-    )
-    illumination_net = IlluminationNetwork(illum_args, trainable=False)
-
-    z = illumination_net.cnn_encoder(envmap)
-    return z
-
 
 def eval_datasets(
     strategy,
@@ -192,9 +116,6 @@ def eval_datasets(
     ]
 
     illumination_context_override = None
-    if envmap_path:
-        envmap = get_envmap(envmap_path)
-        illumination_context_override = get_illum_override_context(envmap)
 
     # Go over validation dataset
     with strategy.scope():
@@ -353,7 +274,7 @@ def main(args):
     # Setup directories, logging etc.
     with train_utils.SetupDirectory(
         args,
-        copy_files=not args.render_only or not args.only_video,
+        copy_files=False,
         main_script=__file__,
         copy_data=["data/neural_pil", "data/illumination"],
     ):
@@ -605,19 +526,11 @@ def main(args):
                         tf.summary.experimental.get_step() + 1
                     )  # Step was already incremented
 
-                if args.envmap_path is None:
-                    testimgdir = os.path.join(
-                        args.basedir,
-                        args.expname,
-                        "test_imgs_{:06d}".format(tf.summary.experimental.get_step()),
-                    )
-                else:
-                    testimgdir = os.path.join(
-                        args.basedir,
-                        args.expname,
-                        args.envmap_path.split('/')[-1].replace('.hdr', '_') + "test_imgs_{:06d}".format(tf.summary.experimental.get_step()),
-                    )
-
+                testimgdir = os.path.join(
+                    args.basedir,
+                    args.expname,
+                    "other_test_imgs_{:06d}".format(tf.summary.experimental.get_step()),
+                )
 
                 print("Mean PSNR:", fine_psnr, "Mean SSIM:", fine_ssim)
                 os.makedirs(testimgdir, exist_ok=True)
