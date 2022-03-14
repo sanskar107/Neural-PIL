@@ -361,6 +361,8 @@ def eval_datasets(
         if fix_pose_idx is not None:
             envmap_rotation = np.linspace(0,360,num=720+1)[:-1][pose_idx + 360 * iter]
             envmap_rotation = Rotation.from_rotvec([0,0,envmap_rotation], degrees=True).as_matrix().astype(np.float32)
+            rot4 = np.array([[0, -1, 0], [0, 0, 1], [-1, 0, 0]], dtype=np.float32).T
+            envmap_rotation = np.linalg.inv(rot4) @ envmap_rotation @ rot4
         else:
             envmap_rotation = np.eye(3).astype(np.float32)
 
