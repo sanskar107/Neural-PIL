@@ -266,8 +266,8 @@ def eval_datasets(
             ray_origins=tf.reshape(rays_o, (-1, 3)),
             ray_directions=tf.reshape(rays_d, (-1, 3)),
             camera_pose=pose,
-            near_bound=0.95*near,
-            far_bound=1.05*far,
+            near_bound=0.85*near,
+            far_bound=1.15*far,
             illumination_idx=tf.convert_to_tensor([0]),
             ev100=ev100_video,
             illumination_factor=illumination_factor_video, # TODO: check with illum_factor_video as in render_video function
@@ -291,7 +291,7 @@ def eval_datasets(
             out = out.reshape((H, W, 3))
             out = norm_envmap(out)
 
-            cv2.imwrite('videos/envmap4.png', (out*255)[:, :, [2, 1, 0]].astype(np.uint8))
+            # cv2.imwrite('videos/envmap4.png', (out*255)[:, :, [2, 1, 0]].astype(np.uint8))
 
             view_direction = math_utils.normalize(-1 * tf.reshape(rays_d, (-1, 3)))
             fres = fine_result
@@ -345,7 +345,7 @@ def eval_datasets(
     hdr_name = 'estimated' if envmap_path is None else envmap_path.split('/')[-1].replace('.hdr', '')
     if fix_pose_idx is not None:
         hdr_name += '_fixed'
-    out_dir = os.path.join('videos', expname, hdr_name)
+    out_dir = os.path.join('/export/share/projects/svbrdf/data/out_videos/neuralpil/', expname, hdr_name)
     print("saving results in : ", out_dir)
     os.makedirs(out_dir, exist_ok=True)
     os.makedirs(os.path.join(out_dir, 'images'), exist_ok=True)
