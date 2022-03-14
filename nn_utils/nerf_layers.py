@@ -499,6 +499,7 @@ def get_full_image_eval_grid(
     focal: float,
     c2w: tf.Tensor,
     jitter: Optional[tf.Tensor] = None,
+    video=False,
 ) -> Tuple[tf.Tensor, tf.Tensor]:
     """Get ray origins, directions from a pinhole camera.
 
@@ -532,6 +533,8 @@ def get_full_image_eval_grid(
         ],
         -1,
     )
+    if video:
+        return dirs
     rays_d = tf.reduce_sum(dirs[..., None, :] * c2w[:3, :3], -1)
     rays_o = tf.broadcast_to(c2w[:3, -1], tf.shape(rays_d))
     return rays_o, rays_d

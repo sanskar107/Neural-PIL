@@ -90,13 +90,28 @@ def add_args(parser):
     )
 
     parser.add_argument(
-        "--poses_path",
+        "--shortname",
         type=str,
         default=None,
         required=True,
-        help="poses path for the video"
+        help="shortname for the scene"
     )
 
+    parser.add_argument(
+        "--pose_idx",
+        type=int,
+        default=None,
+        required=True,
+        help="poses idx for current job"
+    )
+
+    parser.add_argument(
+        "--fix_pose_idx",
+        type=int,
+        default=None,
+        required=False,
+        help="fixed camera index for fixed object"
+    )
     return parser
 
 
@@ -161,7 +176,9 @@ def pick_correct_dataset(args):
             basedir=args.datadir,
             factor=args.rwfactor,
             spherify=args.spherify,
-            poses_path=args.poses_path,
+            shortname=args.shortname,
+            pose_idx=args.pose_idx,
+            fix_pose_idx=args.fix_pose_idx,
         )
 
         hwf = poses[0, :3, -1]
@@ -197,8 +214,8 @@ def pick_correct_dataset(args):
         far = tf.reduce_max(bds) * far
         print("near, fear = ", near, far)
 
-        near = tf.reduce_min(tf.norm(render_poses[:, :3, 3], axis=1))
-        far = tf.reduce_max(tf.norm(render_poses[:, :3, 3], axis=1))
+        near = tf.reduce_min(tf.norm(render_poses[:-1, :3, 3], axis=1))
+        far = tf.reduce_max(tf.norm(render_poses[:-1, :3, 3], axis=1))
         print("near, fear = ", near, far)
 
         # a = tf.norm(poses[:, :3, 3], axis=1)

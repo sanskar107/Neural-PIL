@@ -7,6 +7,7 @@ import tensorflow as tf
 import numpy as np
 import cv2
 from tqdm import tqdm
+from scipy.spatial.transform import Rotation
 
 import dataflow.nerd as data
 import nn_utils.math_utils as math_utils
@@ -164,6 +165,7 @@ def get_illum_override_context(envmap):
         % os.path.join("data/neural_pil/illumination-network", "args.txt")
     )
     illumination_net = IlluminationNetwork(illum_args, trainable=False)
+    illumination_net.illumination_network.set_weights(np.load('data/neural_pil/illumination-network/network.npy', allow_pickle=True))
 
     z = illumination_net.cnn_encoder(envmap)
     return z
@@ -183,30 +185,28 @@ def eval_datasets(
     illumination_factor,
     envmap_path=None,
     render_poses=None,
+    expname=None,
+    pose_idx=None,
+    fix_pose_idx=None,
 ):
+    if not expname:
+        print("No expname provided")
+        exit(0)
     # Build lists to save all individual images
     gt_rgbs = []
     gt_masks = []
 
+    align_matrix = render_poses[-1][:3, :3]
+    render_poses = render_poses[:-1]
+
     H, W, F = render_poses[0][:3, 4]
     H, W = int(H), int(W)
-    # H, W, F = H // 2, W // 2, F / 2.0
+    H, W, F = H // 2, W // 2, F / 2.0
     # H, W, F = H // 2, W // 2, F / 8.0
     # H, W, F = H//4, W//4, F / 4.0
+    # H, W, F = int(H // 1.5), int(W // 1.5), F / 1.5
 
     print("inside = ", H, W, F)
-
-    ##### envmap background
-    from train_illumination_net import parser as illumination_parser
-    from models.illumination_integration_net import IlluminationNetwork
-    illum_parser = illumination_parser()
-    illum_args = illum_parser.parse_args(
-        args="--config %s"
-        % os.path.join("data/neural_pil/illumination-network", "args.txt")
-    )
-    illumination_net = IlluminationNetwork(illum_args, trainable=False)
-    illumination_net.illumination_network.set_weights(np.load('data/neural_pil/illumination-network/network.npy', allow_pickle=True))
-    print("\nrestored illum net\n")
 
     predictions = {}
     to_extract_coarse = [("rgb", 3), ("acc_alpha", 1)]
@@ -241,7 +241,7 @@ def eval_datasets(
     
     if envmap_path is not None:
         envmap_background = get_envmap(envmap_path, reshape=False).numpy()
-        envmap_background = cv2.resize(envmap_background , (512, 256), cv2.INTER_AREA)
+        envmap_background = cv2.resize(envmap_background , (1024, 512), cv2.INTER_AREA)
         # envmap_background = cv2.cvtColor(
         #     cv2.imread(envmap_path, cv2.IMREAD_UNCHANGED), cv2.COLOR_BGR2RGB
         # ).astype(np.float32)
@@ -256,7 +256,7 @@ def eval_datasets(
             1
         )
 
-    def render_pose(pose, envmap_background):
+    def render_pose(pose, envmap_background, envmap_rotation):
         # Always start and end with mean
         rays_o, rays_d = get_full_image_eval_grid(H, W, F, tf.reshape(pose, (3, 4)))
 
@@ -266,8 +266,8 @@ def eval_datasets(
             ray_origins=tf.reshape(rays_o, (-1, 3)),
             ray_directions=tf.reshape(rays_d, (-1, 3)),
             camera_pose=pose,
-            near_bound=near,
-            far_bound=far,
+            near_bound=0.95*near,
+            far_bound=1.05*far,
             illumination_idx=tf.convert_to_tensor([0]),
             ev100=ev100_video,
             illumination_factor=illumination_factor_video, # TODO: check with illum_factor_video as in render_video function
@@ -277,22 +277,21 @@ def eval_datasets(
         )
 
         if envmap_background is not None:
-            illum_dirs = rays_d / tf.reshape(tf.norm(rays_d, axis=2), (*rays_d.shape[:2], 1)) - rays_o / tf.reshape(tf.norm(rays_o, axis=2), (*rays_o.shape[:2], 1))
-            illum_dirs = rays_d
-            uv = math_utils.direction_to_uv(tf.reshape(illum_dirs, (-1, 3))).numpy()
+            view_direction = math_utils.normalize(tf.reshape(rays_d, (-1, 3)))
+            view_direction = tf.convert_to_tensor(view_direction.numpy() @ align_matrix @ envmap_rotation)
+
+            uv = math_utils.direction_to_uv(tf.reshape(view_direction, (-1, 3))).numpy()
             u, v = uv[:, 0], uv[:, 1]
             x = np.clip(u * envmap_background.shape[1] - 0.5, 0, envmap_background.shape[1]).astype(np.int32)
             y = np.clip(v * envmap_background.shape[0] - 0.5, 0, envmap_background.shape[0]).astype(np.int32)
-            print(x,y)
-            envmap_background *= 1.0
-            # envmap_background = norm_envmap(envmap_background) * 255
+            print(x.reshape(H, W),y.reshape(H, W))
+
             out = np.empty((uv.shape[0], 3))
             out = envmap_background[y,x]
             out = out.reshape((H, W, 3))
             out = norm_envmap(out)
-            # out = (out / out.max()) * 255
-            # out = norm_envmap(out) * 255
-            cv2.imwrite('videos/envmap4.png', (out*255).astype(np.uint8))
+
+            cv2.imwrite('videos/envmap4.png', (out*255)[:, :, [2, 1, 0]].astype(np.uint8))
 
             view_direction = math_utils.normalize(-1 * tf.reshape(rays_d, (-1, 3)))
             fres = fine_result
@@ -306,6 +305,7 @@ def eval_datasets(
                 fres["normal"],
                 camera_pose=None,
             )
+            reflection_direction = tf.convert_to_tensor(reflection_direction.numpy() @ align_matrix @ envmap_rotation)
 
             diffuse_irradiance = model.fine_model.illumination_net.call_multi_samples(
                 tf.expand_dims(reflection_direction, 0),
@@ -325,7 +325,7 @@ def eval_datasets(
             )[0]
 
             hdr_rgb = model.fine_model.renderer(
-                view_direction,
+                math_utils.normalize(-1 * tf.reshape(rays_d, (-1, 3))),
                 fres["normal"],
                 diffuse_irradiance,
                 specular_irradiance,
@@ -336,49 +336,35 @@ def eval_datasets(
 
             fine_result["hdr_rgb"] = hdr_rgb
 
-            # # We do not have a fitting ev for this scene - Just use reinhard tone mapping
-            # rgb = math_utils.white_background_compose(
-            #     math_utils.linear_to_srgb(math_utils.uncharted2_filmic(hdr_rgb)),
-            #     fres["acc_alpha"][..., None]
-            #     * (
-            #         tf.where(
-            #             fres["depth"] < (far * 1.0),
-            #             tf.ones_like(fres["depth"]),
-            #             tf.zeros_like(fres["depth"]),
-            #         )[..., None]
-            #     ),
-            # )
-            # rgb = (rgb.numpy() * 255).astype(np.uint8)
-            # rgb = rgb.reshape((H, W, 3))
-            # cv2.imwrite("videos/test2_factor_override_no_norm.png", rgb[:, :, [2, 1, 0]])
-            # # print(rgb, rgb.shape)
-            # exit(0)
-
             return fine_result, out.reshape(-1, 3).astype(np.float32)
         else:
             return fine_result, None
 
 
-        # for latent_dp in tqdm(latent_dist_df):
-        #     rgb_per_replica = strategy.run(
-        #         render_latent, (rays_o, rays_d, fine_result, latent_dp)
-        #     )
-        #     rgb_result = strategy.gather(rgb_per_replica, 0).numpy()
-        #     rgb_results = np.split(rgb_result, train_utils.get_num_gpus(), 0)
-        #     fine_results["rgb"] = fine_results.get("rgb", []) + rgb_results
-
-
     fine_results = {}
-    out_dir = os.path.join('videos', 'hydrant106', 'estimated' if envmap_path is None else envmap_path.split('/')[-1].replace('.hdr', ''))
+    hdr_name = 'estimated' if envmap_path is None else envmap_path.split('/')[-1].replace('.hdr', '')
+    if fix_pose_idx is not None:
+        hdr_name += '_fixed'
+    out_dir = os.path.join('videos', expname, hdr_name)
     print("saving results in : ", out_dir)
     os.makedirs(out_dir, exist_ok=True)
+    os.makedirs(os.path.join(out_dir, 'images'), exist_ok=True)
+    os.makedirs(os.path.join(out_dir, 'masks'), exist_ok=True)
+    os.makedirs(os.path.join(out_dir, 'envmaps'), exist_ok=True)
 
     for iter, pose_dp in enumerate(tqdm(pose_df)):
         cur_pose = pose_dp
         print("cur pose : ", cur_pose)
         print("illum_factor : ", illumination_factor)
         print("illum_factor_video : ", illumination_factor_video)
-        fine_result, background = render_pose(pose_dp, envmap_background)
+
+        if fix_pose_idx is not None:
+            envmap_rotation = np.linspace(0,360,num=720+1)[:-1][pose_idx + 360 * iter]
+            envmap_rotation = Rotation.from_rotvec([0,0,envmap_rotation], degrees=True).as_matrix().astype(np.float32)
+        else:
+            envmap_rotation = np.eye(3).astype(np.float32)
+
+        fine_result, background = render_pose(pose_dp, envmap_background, envmap_rotation)
 
         if background is None:
             fine_result["rgb"] = math_utils.white_background_compose(
@@ -431,20 +417,24 @@ def eval_datasets(
         mask = mask.numpy().reshape((H, W)) * 255
         mask = mask.astype(np.uint8)
 
+
         # hdr_rgb = fine_result["hdr_rgb"].numpy()
         # hdr_rgb = (hdr_rgb / hdr_rgb.max()) * 255
         # hdr_rgb = hdr_rgb.astype(np.uint8)
         # hdr_rgb = hdr_rgb.reshape((H, W, 3))
 
-        out_path = os.path.join(out_dir, 'd_rgb_' + str(iter) + '.png')
+        out_path = os.path.join(out_dir, 'images', 'rgb_' + str(pose_idx + iter*360) + '.png')
         cv2.imwrite(out_path, rgb[:, :, [2, 1, 0]])
-        cv2.imwrite(out_path.replace('rgb_', 'mask_'), mask)
 
-        if iter == 3:
-            exit(0)
-        # print(fine_results)
-        # exit(0)
+        out_path = os.path.join(out_dir, 'masks', 'mask_' + str(pose_idx + iter*360) + '.png')
+        cv2.imwrite(out_path, mask)
 
+        if background is not None:
+            background = (background.reshape((H, W, 3)) * 255).astype(np.uint8)[:, :, [2, 1, 0]]
+            out_path = os.path.join(out_dir, 'envmaps', 'env_' + str(pose_idx + iter*360) + '.png')
+            cv2.imwrite(out_path, background)
+
+    exit(0)
 
 
     # Go over validation dataset
@@ -709,6 +699,9 @@ def main(args):
                     illumination_factor,
                     args.envmap_path,
                     render_poses,
+                    args.expname,
+                    args.pose_idx,
+                    args.fix_pose_idx,
                 )
 
                 if args.envmap_path is None:

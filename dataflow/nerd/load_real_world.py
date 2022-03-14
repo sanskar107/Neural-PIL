@@ -1,5 +1,6 @@
 import os
 from subprocess import check_output
+from scipy.spatial.transform import Rotation
 
 import imageio
 import numpy as np
@@ -356,10 +357,21 @@ def spherify_poses(poses, bds):
 
     return poses_reset, new_poses, bds
 
-def get_video_poses(path, old_poses, video_sc, video_c2w):
-    print(f"\n\nUsing video poses from : {path}\n\n")
+def get_video_poses(path, pose_idx, fix_pose_idx, old_poses, video_sc, video_c2w):
     from glob import glob
-    files = sorted(glob(path + '/*.npz'))
+
+    if fix_pose_idx is None:
+        this_job_poses = ['cam_' + str(pose_idx).zfill(3) + '.npz', 'cam_' + str(pose_idx+360).zfill(3) + '.npz']
+        files = sorted(p for p in glob(path + '/*.npz') if p.split('/')[-1] in this_job_poses)
+    else:
+        this_job_poses = ['cam_' + str(fix_pose_idx).zfill(3) + '.npz']
+        files = sorted(p for p in glob(path + '/*.npz') if p.split('/')[-1] in this_job_poses) * 2
+
+    print(f"\n\nUsing video poses from : {files}\n\n")
+
+    if len(files) == 0:
+        print("No pose found")
+        exit(0)
 
     w2c_mats = []
     bottom = np.array([0,0,0,1.]).reshape([1,4])
@@ -381,7 +393,7 @@ def get_video_poses(path, old_poses, video_sc, video_c2w):
     print(f"\n\nHWF = {hwf}\n\n")
 
     poses = c2w_mats[:, :3, :4]
-    hwf = np.repeat(hwf.reshape(1, 3, 1), 720, axis=0)
+    hwf = np.repeat(hwf.reshape(1, 3, 1), len(files), axis=0)
     poses = np.concatenate([poses, hwf], 2)
     poses = np.concatenate([poses[:, :, 0:1], -poses[:, :, 1:2], -poses[:, :, 2:3], poses[:, :, 3:4], poses[:, :, 4:5]], 2)
 
@@ -399,32 +411,7 @@ def get_video_poses(path, old_poses, video_sc, video_c2w):
     poses_[:, :3, :4] = poses[:, :3, :4]
     poses = poses_
 
-
     return poses
-
-
-    # factor = 2.0
-    # focal = focal * 1.0 / factor
-    # poses[:, 2, 4] = focal
-
-    np.save('videos/spiral_poses.npy', poses)
-
-    poses = recenter_poses(poses)
-    np.save('videos/spiral_poses_recentered.npy', poses)
-    np.save('videos/old_poses.npy', old_poses)
-
-    exit(0)
-
-    return poses
-
-    print(old_poses)
-    print(old_poses.shape)
-    print(poses)
-    print(poses.shape)
-    print(focal)
-    exit(0)
-        
-
 
 
 def load_llff_data(
@@ -433,7 +420,9 @@ def load_llff_data(
     recenter=True,
     bd_factor=0.75,
     spherify=False,
-    poses_path=None,
+    shortname=None,
+    pose_idx=None,
+    fix_pose_idx=None,
     path_zflat=False,
 ):
     poses, bds, imgs, msks, ev100s = _load_data(
@@ -502,17 +491,26 @@ def load_llff_data(
         )
 
     render_poses = np.array(render_poses).astype(np.float32)
-    if poses_path:
-        render_poses = get_video_poses(poses_path, render_poses, video_sc, video_c2w).astype(np.float32)
-        import random
-        shuf = np.arange(render_poses.shape[0])
-        random.shuffle(shuf)
-        # render_poses = render_poses[shuf]
-        print("render_poses : ", render_poses.shape, poses.shape)
-        # render_poses[1, :3, :3] = poses[1, :3, :3]
-        # render_poses[2, :3, 3] = poses[2, :3, 3]
-        # render_poses[3] = poses[3]
-        # render_poses[1] = poses[1]
+    if shortname:
+        poses_path = "/export/share/projects/svbrdf/data/video/cams_and_transforms/" + shortname + "_720"
+        rot_path = "/export/share/projects/svbrdf/data/video/cams_and_transforms/" + shortname + "_rotated.npz"
+        render_poses = get_video_poses(poses_path, pose_idx, fix_pose_idx, render_poses, video_sc, video_c2w).astype(np.float32)
+
+        rot1 = Rotation.from_matrix(video_c2w[:3, :3]).as_matrix().T  # reverse rotation from neuralpil preprocessing
+        rot2 = Rotation.from_rotvec([180,0,0], degrees=True).as_matrix().astype(np.float32)  # upside down fix
+        rot3 = np.load(rot_path)['matrix_obj2world'][:3,:3].T.astype(np.float32)  # envmap orientation
+        rot4 = np.array([[0, -1, 0], [0, 0, 1], [-1, 0, 0]], dtype=np.float32).T  # orient for u,v convention change
+
+        rot = rot1 @ rot2 @ rot3 @ rot4
+
+        pad_rot = np.concatenate([rot, [[1, 1], [1, 1], [1, 1]]], 1)
+
+        # rotvec = np.stack([list(rotvec)] * 5, 1)
+        render_poses = np.concatenate([render_poses, [pad_rot]], 0).astype(np.float32)
+        print("render_poses : ", render_poses, render_poses.shape, poses.shape)
+    else:
+        print("no short name provided")
+        exit(0)
 
     c2w = poses_avg(poses)
     print("Data:")
