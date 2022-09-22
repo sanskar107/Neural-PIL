@@ -266,8 +266,8 @@ def eval_datasets(
             ray_origins=tf.reshape(rays_o, (-1, 3)),
             ray_directions=tf.reshape(rays_d, (-1, 3)),
             camera_pose=pose,
-            near_bound=0.85*near,
-            far_bound=1.15*far,
+            near_bound=near*0.8,
+            far_bound=far*1.2,
             illumination_idx=tf.convert_to_tensor([0]),
             ev100=ev100_video,
             illumination_factor=illumination_factor_video, # TODO: check with illum_factor_video as in render_video function
@@ -391,7 +391,7 @@ def eval_datasets(
                 fine_result["acc_alpha"][..., None]
                 * (
                     tf.where(
-                        fine_result["depth"] < (far * 1.0),
+                        fine_result["depth"] < (far * 1.2),
                         tf.ones_like(fine_result["depth"]),
                         tf.zeros_like(fine_result["depth"]),
                     )[..., None]
@@ -410,7 +410,7 @@ def eval_datasets(
 
         mask = fine_result["acc_alpha"][..., None] * (
                     tf.where(
-                        fine_result["depth"] < (far * 1.0),
+                        fine_result["depth"] < (far * 1.2),
                         tf.ones_like(fine_result["depth"]),
                         tf.zeros_like(fine_result["depth"]),
                     )[..., None]
