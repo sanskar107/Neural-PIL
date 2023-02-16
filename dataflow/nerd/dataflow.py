@@ -146,6 +146,7 @@ def pick_correct_dataset(args):
         near = args.near if args.near is not None else 2
         far = args.far if args.far is not None else 6
     elif args.dataset_type == "real_world":
+        print(f"Resize factor : {args.rwfactor}, spherify : {args.spherify}")
         (images, masks, ev100s, poses, bds, render_poses, i_test,) = load_llff_data(
             basedir=args.datadir, factor=args.rwfactor, spherify=args.spherify,
         )
@@ -160,20 +161,27 @@ def pick_correct_dataset(args):
             print("Auto Real World holdout,", args.rwholdout)
             i_test = np.arange(images.shape[0])[:: args.rwholdout]
 
-        i_val = i_test
-        i_train = np.array(
-            [
-                i
-                for i in np.arange(int(images.shape[0]))
-                if (i not in i_test and i not in i_val)
-            ]
-        )
+        # i_val = i_test
+        # i_train = np.array(
+        #     [
+        #         i
+        #         for i in np.arange(int(images.shape[0]))
+        #         if (i not in i_test and i not in i_val)
+        #     ]
+        # )
+        i_train = np.arange(images.shape[0])[:-9]
+        i_val = np.arange(images.shape[0])[-9:-6]
+        i_test = np.arange(images.shape[0])[-9:]
+        # i_test = i_val
+        print(f"total : {images.shape[0]}, train : {i_train}, val : {i_val}, test : {i_test}")
 
         wb_ref_image = np.array([False for _ in range(images.shape[0])])
         # TODO make this configurable. Currently the reference image
         # is a completely random one
-        ref_idx = np.random.choice(i_train, 1)
-        wb_ref_image[ref_idx] = True
+        # ref_idx = np.random.choice(i_train, 1)
+        # wb_ref_image[ref_idx] = True
+        print(f"ref idx : 0")
+        wb_ref_image[0] = True
 
         near = args.near if args.near is not None else 0.9
         far = args.far if args.far is not None else 1.0
@@ -186,7 +194,7 @@ def pick_correct_dataset(args):
     H, W = int(H), int(W)
     hwf = [H, W, focal]
 
-    mean_ev100 = np.mean(ev100s)
+    mean_ev100 = np.mean(ev100s[i_train])
 
     return (
         i_train,

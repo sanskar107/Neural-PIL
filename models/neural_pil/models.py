@@ -689,6 +689,7 @@ class FineModel(tf.keras.Model):
         Returns:
             tf.Tensor: [description]
         """
+        # ldr_rgb = math_utils.linear_to_srgb(math_utils.saturate(math_utils.ev100_to_exp(hdr_rgb, ev100)))
         exp_val = tf.stop_gradient(math_utils.ev100_to_exp(ev100))
         ldr_rgb = math_utils.linear_to_srgb(math_utils.saturate(hdr_rgb * exp_val))
 
