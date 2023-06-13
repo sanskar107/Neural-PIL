@@ -105,6 +105,8 @@ def ensureNoChannel(x: np.ndarray) -> np.ndarray:
 def _load_data(basedir, factor=None, width=None, height=None, load_imgs=True):
     poses_arr = np.load(os.path.join(basedir, "poses_bounds.npy"))
     val_poses_arr = np.load(os.path.join(basedir, "val_poses_bounds.npy"))
+    N_train = poses_arr.shape[0]
+    N_val = val_poses_arr.shape[0]
     exposure_arr = np.load(os.path.join(basedir, "exposure.npy"))
     poses_arr = np.concatenate([poses_arr, val_poses_arr], axis=0)
     poses = poses_arr[:, :-2].reshape([-1, 3, 5]).transpose([1, 2, 0])
@@ -169,8 +171,8 @@ def _load_data(basedir, factor=None, width=None, height=None, load_imgs=True):
         return
 
     sh = imageio.imread(imgfiles[0]).shape
-    poses[:2, 4, :] = np.array(sh[:2]).reshape([2, 1])
-    poses[2, 4, :] = poses[2, 4, :] * 1.0 / factor
+    # poses[:2, 4, :] = np.array(sh[:2]).reshape([2, 1])
+    poses[:3, 4, :] = poses[:3, 4, :] * 1.0 / factor  # scale cx, cy, f
 
     if not load_imgs:
         return poses, bds
@@ -188,7 +190,7 @@ def _load_data(basedir, factor=None, width=None, height=None, load_imgs=True):
     masks = np.stack(masks, -1)
 
     print("Loaded image data", imgs.shape, masks.shape, poses[:, -1, 0])
-    return poses, bds, imgs, masks, ev100s
+    return poses, bds, imgs, masks, ev100s, N_train, N_val
 
 
 def handle_exif(basedir):
@@ -364,7 +366,7 @@ def spherify_poses(poses, bds):
 def load_llff_data(
     basedir, factor=8, recenter=False, bd_factor=0.75, spherify=False, path_zflat=False,
 ):
-    poses, bds, imgs, msks, ev100s = _load_data(
+    poses, bds, imgs, msks, ev100s, N_train, N_val = _load_data(
         basedir, factor=factor,
     )  # factor=8 downsamples original imgs by 8x
     print("Loaded", basedir, bds.min(), bds.max())
@@ -441,4 +443,4 @@ def load_llff_data(
     masks = masks.astype(np.float32)
     poses = poses.astype(np.float32)
 
-    return images, masks, ev100s, poses, bds, render_poses, i_test
+    return images, masks, ev100s, poses, bds, render_poses, i_test, N_train, N_val

@@ -150,8 +150,8 @@ def eval_datasets(
 
             illumination_context_override = None
             if envmap_path:
-                if idx not in [0, 1, 2]:
-                    illumination_context_override = override_contexts[idx][None, ...]
+                # if idx not in [0, 1, 2]:
+                illumination_context_override = override_contexts[idx][None, ...]
 
             illumination_factor = tf.stop_gradient(
                 model.calculate_illumination_factor(
@@ -509,9 +509,9 @@ def main(args):
                 if train_utils.get_num_gpus() > 1:
                     dp = [d.values[0] for d in dp]
 
-                render_test_example(
-                    dp, hwf, neuralpil, args, near, far, illumination_factor, strategy
-                )
+                # render_test_example(
+                #     dp, hwf, neuralpil, args, near, far, illumination_factor, strategy
+                # )
 
                 # Save when a weight epoch arrives
                 if epoch % args.weights_epoch == 0:
@@ -563,7 +563,7 @@ def main(args):
                     testimgdir = os.path.join(
                         args.basedir,
                         args.expname,
-                        "test_imgs_{:06d}".format(tf.summary.experimental.get_step()),
+                        "nvs_{:06d}".format(tf.summary.experimental.get_step()),
                     )
                 else:
                     testimgdir = os.path.join(

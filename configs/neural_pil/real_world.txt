@@ -14,8 +14,8 @@ rwfactor = 2
 epochs = 400
 steps_per_epoch = 1000
 
-weights_epoch = 10
-validation_epoch = 10
-testset_epoch = 100
-video_epoch = 400
+weights_epoch = 50
+validation_epoch = 500
+testset_epoch = 500
+video_epoch = 500
 
